@@ -1,0 +1,5 @@
+{
+  "name": "ระบบทะเบียนจัดซื้อ จัดจ้าง รพ.สามชุก",
+  "description": "A comprehensive procurement and hiring management system featuring Purchase Orders, Hiring Orders, Receiving Reports, and Dashboard analytics with automatic running number logic based on Thai government regulations.",
+  "requestFramePermissions": []
+}
