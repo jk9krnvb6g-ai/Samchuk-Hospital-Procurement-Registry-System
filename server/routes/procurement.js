@@ -394,8 +394,11 @@ router.post('/procurements', authenticateToken, async (req, res) => {
 
 // 3. DELETE /procurements/:id - Delete Procurement Record
 router.delete('/procurements/:id', authenticateToken, requireAdmin, async (req, res) => {
-    try { 
-        await query('DELETE FROM procurements WHERE id = ?', [req.params.id]); 
+    try {
+        const records = await query('SELECT id, is_locked FROM procurements WHERE id = ?', [req.params.id]);
+        if (!records.length) return res.status(404).json({ success: false, error: 'Record not found' });
+        if (records[0].is_locked) return res.status(409).json({ success: false, error: 'Locked record cannot be deleted' });
+        await query('DELETE FROM procurements WHERE id = ? AND (is_locked = 0 OR is_locked IS NULL)', [req.params.id]); 
         res.json({ success: true }); 
     } catch (e) { 
         console.error('[Delete Procurement Error]', e.message);
@@ -407,15 +410,20 @@ router.delete('/procurements/:id', authenticateToken, requireAdmin, async (req, 
 router.patch('/procurements/:id', authenticateToken, async (req, res) => {
     try {
         const p = req.body || {};
+        const records = await query('SELECT id, is_locked FROM procurements WHERE id = ?', [req.params.id]);
+        if (!records.length) return res.status(404).json({ success: false, error: 'Record not found' });
+        if (records[0].is_locked && req.user.role !== 'ADMIN') {
+            return res.status(409).json({ success: false, error: 'Locked record cannot be edited by this role' });
+        }
         const fields = []; const params = [];
-        if (p.requestId !== undefined) { fields.push('request_id = ?'); params.push(p.requestId); }
+        // Document identifiers are server-managed and cannot be modified by clients.
         if (p.requestDate !== undefined) { fields.push('request_date = ?'); params.push(p.requestDate); }
         if (p.category !== undefined) { fields.push('category = ?'); params.push(p.category); }
         if (p.itemCount !== undefined) { fields.push('item_count = ?'); params.push(p.itemCount); }
         if (p.amount !== undefined) { fields.push('amount = ?'); params.push(p.amount); }
         if (p.company !== undefined) { fields.push('company = ?'); params.push(p.company); }
         if (p.remarks !== undefined) { fields.push('remarks = ?'); params.push(p.remarks); }
-        if (p.officialNumber !== undefined) { fields.push('official_number = ?'); params.push(p.officialNumber); }
+        // Official document numbers require a separate audited numbering workflow.
         if (p.isLocked !== undefined) {
             if (!['ADMIN', 'EXECUTIVE'].includes(req.user.role)) {
                 return res.status(403).json({ success: false, error: 'Only ADMIN or EXECUTIVE may change lock state' });
@@ -642,6 +650,7 @@ router.patch('/users/:id', authenticateToken, requireAdmin, async (req, res) => 
 
         // Privilege escalation guard: role changes require ADMIN
         if (req.body.role !== undefined) {
+            if (!['ADMIN', 'EXECUTIVE', 'USER'].includes(req.body.role)) return res.status(400).json({ success: false, error: 'Invalid role' });
             if (!req.user || req.user.role !== 'ADMIN') {
                 return res.status(403).json({ success: false, error: 'เฉพาะผู้ดูแลระบบ (ADMIN) เท่านั้นที่สามารถเปลี่ยนบทบาทผู้ใช้ได้' });
             }
@@ -649,6 +658,7 @@ router.patch('/users/:id', authenticateToken, requireAdmin, async (req, res) => 
             params.push(req.body.role);
         }
 
+        if (req.body.status !== undefined && !['ACTIVE', 'SUSPENDED'].includes(req.body.status)) return res.status(400).json({ success: false, error: 'Invalid account status' });
         for (const [key, val] of Object.entries(req.body)) {
             if (key === 'role') continue; // Handled above
             if (ALLOWED_USER_FIELDS[key]) {
