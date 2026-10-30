@@ -126,11 +126,11 @@ const requireAdmin = (req, res, next) => {
 };
 
 // Constant-time password verification supporting legacy plaintext and hashes
+const bcrypt = require('bcryptjs');
 const verifyPassword = (inputPassword, storedPassword) => {
     if (!inputPassword || !storedPassword) return false;
     if (storedPassword.startsWith('$2a$') || storedPassword.startsWith('$2b$')) {
         try {
-            const bcrypt = require('bcryptjs');
             return bcrypt.compareSync(inputPassword, storedPassword);
         } catch (e) {
             return false;
@@ -578,7 +578,7 @@ router.post('/login', async (req, res) => {
             return res.status(401).json({ success: false, message: 'ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง' });
         }
         const user = users[0];
-        if (user.status === 'SUSPENDED') {
+        if (user.status !== 'ACTIVE') {
             return res.status(403).json({ success: false, message: 'บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ' });
         }
         const isMatch = verifyPassword(password, user.password);
@@ -655,11 +655,11 @@ router.patch('/users/:id', authenticateToken, requireAdmin, async (req, res) => 
         if (req.body.newPassword !== undefined) {
             if (typeof req.body.newPassword !== 'string') return res.status(400).json({ success: false, error: 'Invalid password format' });
             const cleanPass = req.body.newPassword.trim();
-            if (cleanPass.length < 4) {
-                return res.status(400).json({ success: false, error: 'รหัสผ่านใหม่ต้องมีความยาวอย่างน้อย 4 ตัวอักษร' });
+            if (cleanPass.length < 12) {
+                return res.status(400).json({ success: false, error: 'รหัสผ่านใหม่ต้องมีความยาวอย่างน้อย 12 ตัวอักษร' });
             }
             updates.push('password = ?');
-            params.push(cleanPass);
+            params.push(await bcrypt.hash(cleanPass, 12));
         }
 
         if (updates.length === 0) {
