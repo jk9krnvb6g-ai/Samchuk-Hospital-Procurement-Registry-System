@@ -6,11 +6,16 @@ const router = express.Router();
 // ==========================================
 // 🛠️ DATABASE CONFIGURATION (ENV DRIVEN)
 // ==========================================
-const DB_CONFIG = { 
-    host: process.env.PROCUREMENT_DB_HOST || '10.1.0.201',
-    user: process.env.PROCUREMENT_DB_USER || 'sa',
-    password: process.env.PROCUREMENT_DB_PASSWORD || 'Sam#11294',
-    database: process.env.PROCUREMENT_DB_NAME || 'procurement_db', 
+const requiredDbEnv = ['PROCUREMENT_DB_HOST', 'PROCUREMENT_DB_USER', 'PROCUREMENT_DB_PASSWORD', 'PROCUREMENT_DB_NAME'];
+const missingDbEnv = requiredDbEnv.filter(key => !process.env[key]);
+if (missingDbEnv.length) {
+    throw new Error('Procurement database configuration missing: ' + missingDbEnv.join(', '));
+}
+const DB_CONFIG = {
+    host: process.env.PROCUREMENT_DB_HOST,
+    user: process.env.PROCUREMENT_DB_USER,
+    password: process.env.PROCUREMENT_DB_PASSWORD,
+    database: process.env.PROCUREMENT_DB_NAME,
     port: parseInt(process.env.PROCUREMENT_DB_PORT || '3306', 10),
     waitForConnections: true,
     connectionLimit: parseInt(process.env.PROCUREMENT_DB_CONNECTION_LIMIT || '10', 10),
@@ -47,7 +52,10 @@ const query = (sql, params = []) => {
 // ==========================================
 // 🔐 SECURITY & TOKEN AUTHENTICATION (HMAC-SHA256)
 // ==========================================
-const JWT_SECRET = process.env.PROCUREMENT_JWT_SECRET || 'samchuk_hospital_procurement_jwt_secret_key_2026';
+const JWT_SECRET = process.env.PROCUREMENT_JWT_SECRET;
+if (!JWT_SECRET || Buffer.byteLength(JWT_SECRET, 'utf8') < 32) {
+    throw new Error('PROCUREMENT_JWT_SECRET must be configured with at least 32 bytes');
+}
 const TOKEN_EXPIRY_MS = (parseInt(process.env.PROCUREMENT_TOKEN_EXPIRY_HOURS || '12', 10)) * 60 * 60 * 1000;
 
 const generateToken = (user) => {
@@ -74,7 +82,7 @@ const verifyToken = (token) => {
             return null;
         }
         const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-        if (decoded.exp && decoded.exp < Date.now()) {
+        if (!Number.isFinite(decoded.exp) || decoded.exp <= Date.now() || !decoded.id || !decoded.role) {
             return null; // Expired
         }
         return decoded;
@@ -118,11 +126,11 @@ const requireAdmin = (req, res, next) => {
 };
 
 // Constant-time password verification supporting legacy plaintext and hashes
+const bcrypt = require('bcryptjs');
 const verifyPassword = (inputPassword, storedPassword) => {
     if (!inputPassword || !storedPassword) return false;
     if (storedPassword.startsWith('$2a$') || storedPassword.startsWith('$2b$')) {
         try {
-            const bcrypt = require('bcryptjs');
             return bcrypt.compareSync(inputPassword, storedPassword);
         } catch (e) {
             return false;
@@ -287,7 +295,7 @@ const generateMasterSequence = async (deptId, explicitPrefix = null, requestDate
 // ==========================================
 
 // 1. GET /data - Complete Dashboard & Entity Payload
-router.get('/data', async (req, res) => {
+router.get('/data', authenticateToken, async (req, res) => {
     try {
         const [p, r, c, d, w, cat, a, u] = await Promise.all([
             query('SELECT * FROM procurements'), 
@@ -334,7 +342,7 @@ router.get('/data', async (req, res) => {
 });
 
 // 2. POST /procurements - Create Procurement Record
-router.post('/procurements', optionalAuthenticate, async (req, res) => {
+router.post('/procurements', authenticateToken, async (req, res) => {
     const p = req.body || {};
     try {
         const finalRequestId = await generateMasterSequence(p.departmentId, null, p.requestDate);
@@ -373,7 +381,7 @@ router.post('/procurements', optionalAuthenticate, async (req, res) => {
         }
 
         const newId = `proc_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-        const creatorId = req.user?.id || p.createdBy || 'unknown';
+        const creatorId = req.user.id;
         await query('INSERT INTO procurements (id, request_id, request_date, category, item_count, amount, company, remarks, official_number, type, department_id, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
             [newId, finalRequestId, p.requestDate, p.category, p.itemCount, p.amount, p.company, p.remarks, finalOfficialNumber, p.type, p.departmentId, creatorId, Date.now()]);
         
@@ -385,9 +393,12 @@ router.post('/procurements', optionalAuthenticate, async (req, res) => {
 });
 
 // 3. DELETE /procurements/:id - Delete Procurement Record
-router.delete('/procurements/:id', optionalAuthenticate, async (req, res) => {
-    try { 
-        await query('DELETE FROM procurements WHERE id = ?', [req.params.id]); 
+router.delete('/procurements/:id', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const records = await query('SELECT id, is_locked FROM procurements WHERE id = ?', [req.params.id]);
+        if (!records.length) return res.status(404).json({ success: false, error: 'Record not found' });
+        if (records[0].is_locked) return res.status(409).json({ success: false, error: 'Locked record cannot be deleted' });
+        await query('DELETE FROM procurements WHERE id = ? AND (is_locked = 0 OR is_locked IS NULL)', [req.params.id]); 
         res.json({ success: true }); 
     } catch (e) { 
         console.error('[Delete Procurement Error]', e.message);
@@ -396,19 +407,29 @@ router.delete('/procurements/:id', optionalAuthenticate, async (req, res) => {
 });
 
 // 4. PATCH /procurements/:id - Update Procurement Record
-router.patch('/procurements/:id', optionalAuthenticate, async (req, res) => {
+router.patch('/procurements/:id', authenticateToken, async (req, res) => {
     try {
         const p = req.body || {};
+        const records = await query('SELECT id, is_locked FROM procurements WHERE id = ?', [req.params.id]);
+        if (!records.length) return res.status(404).json({ success: false, error: 'Record not found' });
+        if (records[0].is_locked && req.user.role !== 'ADMIN') {
+            return res.status(409).json({ success: false, error: 'Locked record cannot be edited by this role' });
+        }
         const fields = []; const params = [];
-        if (p.requestId !== undefined) { fields.push('request_id = ?'); params.push(p.requestId); }
+        // Document identifiers are server-managed and cannot be modified by clients.
         if (p.requestDate !== undefined) { fields.push('request_date = ?'); params.push(p.requestDate); }
         if (p.category !== undefined) { fields.push('category = ?'); params.push(p.category); }
         if (p.itemCount !== undefined) { fields.push('item_count = ?'); params.push(p.itemCount); }
         if (p.amount !== undefined) { fields.push('amount = ?'); params.push(p.amount); }
         if (p.company !== undefined) { fields.push('company = ?'); params.push(p.company); }
         if (p.remarks !== undefined) { fields.push('remarks = ?'); params.push(p.remarks); }
-        if (p.officialNumber !== undefined) { fields.push('official_number = ?'); params.push(p.officialNumber); }
-        if (p.isLocked !== undefined) { fields.push('is_locked = ?'); params.push(p.isLocked ? 1 : 0); }
+        // Official document numbers require a separate audited numbering workflow.
+        if (p.isLocked !== undefined) {
+            if (!['ADMIN', 'EXECUTIVE'].includes(req.user.role)) {
+                return res.status(403).json({ success: false, error: 'Only ADMIN or EXECUTIVE may change lock state' });
+            }
+            fields.push('is_locked = ?'); params.push(p.isLocked ? 1 : 0);
+        }
         if (fields.length > 0) { 
             params.push(req.params.id); 
             await query(`UPDATE procurements SET ${fields.join(', ')} WHERE id = ?`, params); 
@@ -421,7 +442,7 @@ router.patch('/procurements/:id', optionalAuthenticate, async (req, res) => {
 });
 
 // 5. POST /receivings/upsert - Receiving Report Upsert
-router.post('/receivings/upsert', optionalAuthenticate, async (req, res) => {
+router.post('/receivings/upsert', authenticateToken, async (req, res) => {
     const r = req.body || {};
     try {
         let proc = [];
@@ -490,7 +511,7 @@ router.post('/receivings/upsert', optionalAuthenticate, async (req, res) => {
 });
 
 // 6. POST /considerations/upsert - Consideration Report Upsert
-router.post('/considerations/upsert', optionalAuthenticate, async (req, res) => {
+router.post('/considerations/upsert', authenticateToken, async (req, res) => {
     const c = req.body || {};
     try {
         let proc = [];
@@ -570,7 +591,7 @@ router.post('/login', async (req, res) => {
             return res.status(401).json({ success: false, message: 'ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง' });
         }
         const user = users[0];
-        if (user.status === 'SUSPENDED') {
+        if (user.status !== 'ACTIVE') {
             return res.status(403).json({ success: false, message: 'บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ' });
         }
         const isMatch = verifyPassword(password, user.password);
@@ -601,7 +622,7 @@ router.post('/login', async (req, res) => {
 });
 
 // 8. GET /users - Query Users (Strictly excludes passwords)
-router.get('/users', async (req, res) => {
+router.get('/users', authenticateToken, requireAdmin, async (req, res) => {
     try { 
         const users = await query('SELECT id, username, name, email, role, department_id, status, created_at FROM users'); 
         res.json(users.map(u => ({ ...u, departmentId: u.department_id, createdAt: u.created_at }))); 
@@ -620,21 +641,24 @@ const ALLOWED_USER_FIELDS = {
     role: 'role'
 };
 
-router.patch('/users/:id', optionalAuthenticate, async (req, res) => {
+router.patch('/users/:id', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const targetId = req.params.id;
+        if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return res.status(400).json({ success: false, error: 'Invalid update payload' });
         const updates = [];
         const params = [];
 
         // Privilege escalation guard: role changes require ADMIN
         if (req.body.role !== undefined) {
-            if (req.user && req.user.role !== 'ADMIN') {
+            if (!['ADMIN', 'EXECUTIVE', 'USER'].includes(req.body.role)) return res.status(400).json({ success: false, error: 'Invalid role' });
+            if (!req.user || req.user.role !== 'ADMIN') {
                 return res.status(403).json({ success: false, error: 'เฉพาะผู้ดูแลระบบ (ADMIN) เท่านั้นที่สามารถเปลี่ยนบทบาทผู้ใช้ได้' });
             }
             updates.push('role = ?');
             params.push(req.body.role);
         }
 
+        if (req.body.status !== undefined && !['ACTIVE', 'SUSPENDED'].includes(req.body.status)) return res.status(400).json({ success: false, error: 'Invalid account status' });
         for (const [key, val] of Object.entries(req.body)) {
             if (key === 'role') continue; // Handled above
             if (ALLOWED_USER_FIELDS[key]) {
@@ -644,13 +668,14 @@ router.patch('/users/:id', optionalAuthenticate, async (req, res) => {
         }
 
         // Password update via allowlist
-        if (req.body.newPassword && typeof req.body.newPassword === 'string') {
+        if (req.body.newPassword !== undefined) {
+            if (typeof req.body.newPassword !== 'string') return res.status(400).json({ success: false, error: 'Invalid password format' });
             const cleanPass = req.body.newPassword.trim();
-            if (cleanPass.length < 4) {
-                return res.status(400).json({ success: false, error: 'รหัสผ่านใหม่ต้องมีความยาวอย่างน้อย 4 ตัวอักษร' });
+            if (cleanPass.length < 12) {
+                return res.status(400).json({ success: false, error: 'รหัสผ่านใหม่ต้องมีความยาวอย่างน้อย 12 ตัวอักษร' });
             }
             updates.push('password = ?');
-            params.push(cleanPass);
+            params.push(await bcrypt.hash(cleanPass, 12));
         }
 
         if (updates.length === 0) {
@@ -667,7 +692,7 @@ router.patch('/users/:id', optionalAuthenticate, async (req, res) => {
 });
 
 // 10. POST & PATCH /workgroup
-router.post('/workgroup', optionalAuthenticate, async (req, res) => {
+router.post('/workgroup', authenticateToken, requireAdmin, async (req, res) => {
     const { id, name, prefix, isActive } = req.body || {};
     try { 
         await query('INSERT INTO work_groups (id, name, prefix, is_active) VALUES (?,?,?,?)', [id, name, prefix, isActive ? 1 : 0]); 
@@ -678,7 +703,7 @@ router.post('/workgroup', optionalAuthenticate, async (req, res) => {
     }
 });
 
-router.patch('/workgroup/:id', optionalAuthenticate, async (req, res) => {
+router.patch('/workgroup/:id', authenticateToken, requireAdmin, async (req, res) => {
     const { name, prefix, isActive } = req.body || {};
     try {
         let sql = 'UPDATE work_groups SET '; const params = []; const updates = [];
@@ -694,7 +719,7 @@ router.patch('/workgroup/:id', optionalAuthenticate, async (req, res) => {
 });
 
 // 11. POST & PATCH /department
-router.post('/department', optionalAuthenticate, async (req, res) => {
+router.post('/department', authenticateToken, requireAdmin, async (req, res) => {
     const { id, name, prefix, requestPrefix, workGroupId, isActive } = req.body || {};
     try { 
         await query('INSERT INTO departments (id, name, prefix, request_prefix, work_group_id, is_active) VALUES (?,?,?,?,?,?)', [id, name, prefix, requestPrefix, workGroupId, isActive ? 1 : 0]); 
@@ -705,7 +730,7 @@ router.post('/department', optionalAuthenticate, async (req, res) => {
     }
 });
 
-router.patch('/department/:id', optionalAuthenticate, async (req, res) => {
+router.patch('/department/:id', authenticateToken, requireAdmin, async (req, res) => {
     const { name, prefix, requestPrefix, isActive } = req.body || {};
     try {
         let sql = 'UPDATE departments SET '; const params = []; const updates = [];
@@ -722,7 +747,7 @@ router.patch('/department/:id', optionalAuthenticate, async (req, res) => {
 });
 
 // 12. POST, PATCH & DELETE /category
-router.post('/category', optionalAuthenticate, async (req, res) => {
+router.post('/category', authenticateToken, requireAdmin, async (req, res) => {
     const { id, name, departmentId, isActive } = req.body || {};
     try { 
         await query('INSERT INTO procurement_categories (id, name, department_id, is_active) VALUES (?,?,?,?)', [id, name, departmentId, isActive ? 1 : 0]); 
@@ -733,7 +758,7 @@ router.post('/category', optionalAuthenticate, async (req, res) => {
     }
 });
 
-router.patch('/category/:id', optionalAuthenticate, async (req, res) => {
+router.patch('/category/:id', authenticateToken, requireAdmin, async (req, res) => {
     const { name, isActive } = req.body || {};
     try {
         let sql = 'UPDATE procurement_categories SET '; const params = []; const updates = [];
@@ -747,7 +772,7 @@ router.patch('/category/:id', optionalAuthenticate, async (req, res) => {
     }
 });
 
-router.delete('/category/:id', optionalAuthenticate, async (req, res) => {
+router.delete('/category/:id', authenticateToken, requireAdmin, async (req, res) => {
     try { 
         await query('UPDATE procurement_categories SET is_active = 0 WHERE id = ?', [req.params.id]); 
         res.json({ success: true }); 

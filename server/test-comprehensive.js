@@ -10,6 +10,14 @@
 
 const assert = require('assert');
 const net = require('net');
+const crypto = require('crypto');
+process.env.PROCUREMENT_DB_HOST = '127.0.0.1';
+process.env.PROCUREMENT_DB_USER = 'test';
+process.env.PROCUREMENT_DB_PASSWORD = 'dummy';
+process.env.PROCUREMENT_DB_NAME = 'test';
+process.env.PROCUREMENT_JWT_SECRET = crypto.randomBytes(48).toString('hex');
+process.env.GATEWAY_MODE = 'true';
+process.env.AUTO_MIGRATE = 'false';
 
 console.log('🧪 Starting 12-Point Comprehensive In-Process Test Suite...\n');
 
@@ -19,7 +27,10 @@ let totalTests = 0;
 function runTest(name, fn) {
     totalTests++;
     try {
-        fn();
+        const result = fn();
+        if (result && typeof result.then === 'function') {
+            throw new Error('Async tests must be awaited; use the async test runner');
+        }
         console.log(`  ✅ [PASS ${totalTests}] ${name}`);
         testsPassed++;
     } catch (err) {

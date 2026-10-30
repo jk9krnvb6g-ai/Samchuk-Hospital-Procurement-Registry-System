@@ -71,6 +71,24 @@
 
 ---
 
+## Security hardening branch — pre-merge checklist
+
+This branch is not approved for production deployment. Review PR #1 before merging.
+
+- Backend requires PROCUREMENT_DB_HOST, PROCUREMENT_DB_USER, PROCUREMENT_DB_PASSWORD, PROCUREMENT_DB_NAME and a strong PROCUREMENT_JWT_SECRET.
+- API data and mutation routes require a signed session token. User and configuration management and permanent deletion require ADMIN.
+- The frontend no longer accepts an unverified Provider ID as authentication. Implement a trusted backend SSO exchange before re-enabling this feature.
+- New passwords updated through PATCH /users/:id are bcrypt-hashed. Existing plaintext passwords are still verified for compatibility; automatic progressive hashing is **not implemented**.
+- The frontend /register request has no corresponding backend route; user registration requires a reviewed ADMIN-only API implementation.
+- Procurement runs as a mounted router inside the Central API Gateway. Standalone listening requires PROCUREMENT_ALLOW_STANDALONE=true and must not be used alongside the production Gateway.
+- Automatic DDL migration is opt-in only via AUTO_MIGRATE=true; coordinate with DBA.
+- API traffic goes directly to HTTPS port 3002; IIS serves /Procurement/ on HTTPS port 3001.
+- Run server/test-security-smoke.js and frontend typecheck/build in CI. The older test-comprehensive.js requires refactoring and is not a passing acceptance gate.
+- Rotate any previously committed database credentials and inspect Git history; removing a secret from HEAD does not revoke exposure.
+- Test login, session expiry, role permissions, all CRUD workflows, schema compatibility, IIS hosting, backup and rollback in a non-production environment.
+
+---
+
 ## 🔒 การปรับปรุงด้านความปลอดภัย (Application Security)
 
 1. **ไม่ส่งออกรหัสผ่านใน API Response เด็ดขาด:**
@@ -96,7 +114,7 @@
   - ระบบรองรับทั้งรหัสผ่านแบบเดิม และรหัสผ่านที่ถูก Hash ด้วย bcrypt/argon2
   - การตรวจสอบใช้ Constant-time comparison ป้องกัน Timing Attacks
 * **ระยะเปลี่ยนผ่าน (Progressive Upgrade):**
-  - เมื่อผู้ใช้ล็อกอินสำเร็จด้วยรหัสผ่านเดิม ระบบสามารถ Hash รหัสผ่านใหม่และอัปเดตลงฐานข้อมูลเบื้องหลังได้ทันที โดยควบคุมผ่าน Environment Variable: `ENABLE_PROGRESSIVE_PASSWORD_HASHING=true`
+  - ยังไม่มีการอัปเกรดรหัสผ่านเดิมโดยอัตโนมัติ ต้องพัฒนาและทดสอบการย้ายข้อมูลแยกต่างหาก
   - ไม่มีการสั่ง Reset รหัสผ่านของผู้ใช้ทุกคนพร้อมกัน และไม่ต้องสั่ง ALTER ตารางในคราวเดียว
 
 ---

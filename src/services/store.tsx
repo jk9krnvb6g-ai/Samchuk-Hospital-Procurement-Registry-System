@@ -40,10 +40,13 @@ export const apiFetch = async (endpoint: string, options: RequestInit = {}) => {
         ...getAuthHeaders(),
         ...(options.headers || {})
     };
-    return fetch(`${API_URL}${endpoint}`, {
-        ...options,
-        headers
-    });
+    const response = await fetch(`${API_URL}${endpoint}`, { ...options, headers });
+    if (response.status === 401 && endpoint !== '/login' && typeof window !== 'undefined') {
+        sessionStorage.removeItem('procurement_session_token');
+        sessionStorage.removeItem('procurement_session_user');
+        window.dispatchEvent(new Event('procurement:session-expired'));
+    }
+    return response;
 };
 
 // Thai number helpers for client-side demo calculations
@@ -255,6 +258,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const fetchData = async (isBackground = false) => {
         if (!isBackground) { setIsLoading(true); setServerError(false); }
+        if (!isLocalDemo && !sessionStorage.getItem('procurement_session_token')) {
+            setProcurements([]); setReceivings([]); setConsiderations([]);
+            if (!isBackground) setIsLoading(false);
+            return;
+        }
         try {
             const dataRes = await apiFetch('/data', { signal: AbortSignal.timeout(4000) });
             if (!dataRes.ok) throw new Error(`HTTP ${dataRes.status}`);
@@ -265,9 +273,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setUsers(data.users || []);
             setSettings({
                 requestIdPrefix: data.settings?.requestIdPrefix || 'สพ ๐๐๓๓.๐๖/๑๔/',
-                departments: data.settings?.departments || DEMO_DEPARTMENTS,
-                categories: data.settings?.categories || DEMO_CATEGORIES,
-                workGroups: data.settings?.workGroups || DEMO_WORKGROUPS
+                departments: data.settings?.departments || [],
+                categories: data.settings?.categories || [],
+                workGroups: data.settings?.workGroups || []
             });
             setIsDemoMode(false);
             setServerError(false);
@@ -294,6 +302,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     useEffect(() => {
+        const expireSession = () => {
+            setCurrentUser(null);
+            setProcurements([]); setReceivings([]); setConsiderations([]);
+            setUsers([]);
+            setServerError(true);
+            setServerErrorMessage('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        };
+        window.addEventListener('procurement:session-expired', expireSession);
+        return () => window.removeEventListener('procurement:session-expired', expireSession);
+    }, []);
+
+    useEffect(() => {
         // ล้างข้อมูลแคชจำลองเก่าออกเพื่อความสะอาด
         if (typeof window !== 'undefined') {
             try {
@@ -303,10 +323,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 localStorage.removeItem('samchuk_audit_logs_v1');
             } catch (e) {}
         }
-        fetchData(false);
+        if (sessionStorage.getItem('procurement_session_token')) fetchData(false);
+        else setIsLoading(false);
         const intervalId = setInterval(() => {
-            if (!isDemoMode) fetchData(true);
-        }, 10000);
+            if (sessionStorage.getItem('procurement_session_token')) fetchData(true);
+        }, 60000);
         return () => clearInterval(intervalId);
     }, [isDemoMode]);
 
@@ -337,53 +358,35 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 signal: AbortSignal.timeout(5000)
             });
             const result = await res.json();
-            if (result.success) { 
+            if (!res.ok) return { success: false, message: result.message || 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' };
+            if (result.success && result.token && result.user) {
                 setCurrentUser(result.user); 
                 sessionStorage.setItem('procurement_session_user', JSON.stringify(result.user));
-                if (result.token) {
-                    sessionStorage.setItem('procurement_session_token', result.token);
-                }
+                sessionStorage.setItem('procurement_session_token', result.token);
+                await fetchData(true);
+                return result;
             }
-            return result;
+            return { success: false, message: result.message || 'ไม่สามารถเข้าสู่ระบบได้' };
         } catch (e: any) { 
             if (import.meta.env.PROD) {
                 return { success: false, message: `ไม่สามารถเชื่อมต่อระบบยืนยันตัวตน Central API Gateway ได้ (${e.message}) กรุณาตรวจสอบการเชื่อมต่อเครือข่าย` };
             }
-            // Fallback for standalone/local auth in Dev
-            const user = users.find(usr => usr.username.toLowerCase() === cleanUser);
-            if (user) {
-                setCurrentUser(user);
-                sessionStorage.setItem('procurement_session_user', JSON.stringify(user));
-                return { success: true };
-            }
-            return { success: false, message: 'ไม่สามารถเชื่อมต่อฐานข้อมูล และไม่พบบัญชีผู้ใช้งาน' }; 
+            return { success: false, message: 'ไม่สามารถเชื่อมต่อระบบยืนยันตัวตนได้ กรุณาลองใหม่อีกครั้ง' }; 
         }
     };
 
-    const loginWithProviderId = async (providerId: string, _pin?: string): Promise<{ success: boolean; user?: User; message?: string }> => {
-        const cleanPid = (providerId || '').trim().toLowerCase();
-        const found = users.find(u => ((u as any).providerId || '').toLowerCase() === cleanPid || u.username.toLowerCase() === cleanPid || u.id.toLowerCase() === cleanPid);
-        if (found) {
-            setCurrentUser(found);
-            sessionStorage.setItem('procurement_session_user', JSON.stringify(found));
-            return { success: true, user: found };
-        }
-        // Fallback: if in demo mode or test, match admin if requested
-        if (cleanPid.includes('admin') || cleanPid.includes('10738')) {
-            const adminUser = users.find(u => u.role === 'ADMIN') || users[0];
-            if (adminUser) {
-                setCurrentUser(adminUser);
-                sessionStorage.setItem('procurement_session_user', JSON.stringify(adminUser));
-                return { success: true, user: adminUser };
-            }
-        }
-        return { success: false, message: 'ไม่พบข้อมูล MOPH Provider ID นี้ในฐานข้อมูลบุคลากร สธ.' };
+    // Provider ID must be verified by a trusted backend identity provider before enabling SSO.
+    // Never authenticate a user by matching a client-side identifier or a privileged substring.
+    const loginWithProviderId = async (_providerId: string, _pin?: string): Promise<{ success: boolean; user?: User; message?: string }> => {
+        return { success: false, message: 'การเข้าสู่ระบบด้วย Provider ID ยังไม่เปิดใช้งาน กรุณาเข้าสู่ระบบด้วยชื่อผู้ใช้และรหัสผ่าน' };
     };
 
     const logout = () => { 
         setCurrentUser(null); 
         sessionStorage.removeItem('procurement_session_user'); 
         sessionStorage.removeItem('procurement_session_token');
+        setProcurements([]); setReceivings([]); setConsiderations([]);
+        setUsers([]);
     };
 
     const registerUser = async (userData: any) => {
@@ -393,9 +396,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             return true;
         }
         try { 
-            await apiFetch('/register', { method: 'POST', body: JSON.stringify(userData) }); 
-            fetchData(true); 
-            return true; 
+            // Backend has no /register route. Fail explicitly instead of reporting false success.
+            console.warn('User registration API is not available; configure an ADMIN-only backend endpoint first');
+            return false; 
         } catch (e) { return false; }
     };
 
@@ -405,9 +408,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             return;
         }
         try { 
-            await apiFetch(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }); 
-            fetchData(true); 
-        } catch(e) {}
+            const response = await apiFetch(`/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) });
+            if (!response.ok) throw new Error(`Update user failed: HTTP ${response.status}`);
+            await fetchData(true); 
+        } catch(e) { throw e; }
     };
 
     const deleteUser = (id: string) => updateUser(id, { status: 'SUSPENDED' });
@@ -918,8 +922,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setReceivings(prev => [...prev, { ...data, id: `recv_${Date.now()}`, createdAt: new Date().toISOString() }]);
             return;
         }
-        await apiFetch('/receivings', { method: 'POST', body: JSON.stringify(data) }); 
-        fetchData(true); 
+        const response = await apiFetch('/receivings/upsert', { method: 'POST', body: JSON.stringify(data) });
+        if (!response.ok) throw new Error(`Receiving save failed: HTTP ${response.status}`);
+        await fetchData(true); 
     };
 
     const deleteReceiving = async (id: string) => { 
@@ -927,8 +932,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setReceivings(prev => prev.filter(r => r.id !== id));
             return;
         }
-        await apiFetch(`/receivings/${id}`, { method: 'DELETE' }); 
-        fetchData(true); 
+        throw new Error('Receiving deletion is not supported by the backend; no data was deleted'); 
     };
 
     const addConsideration = async (record: any) => { 
@@ -936,8 +940,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setConsiderations(prev => [...prev, { ...record, id: `cons_${Date.now()}` }]);
             return;
         }
-        await apiFetch('/considerations', { method: 'POST', body: JSON.stringify(record) }); 
-        fetchData(true); 
+        const response = await apiFetch('/considerations/upsert', { method: 'POST', body: JSON.stringify(record) });
+        if (!response.ok) throw new Error(`Consideration save failed: HTTP ${response.status}`);
+        await fetchData(true); 
     };
 
     const upsertReceiving = async (requestId: string, number: string | null, date: string, procurementId?: string, requestDate?: string) => {

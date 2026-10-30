@@ -2,24 +2,13 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const path = require('path');
-const fs = require('fs');
 
-// Handle uncaught exceptions to prevent server from crashing immediately
-process.on('uncaughtException', (err) => {
-    console.error('CRITICAL ERROR (Uncaught Exception):', err);
-    console.error('The server is still running, but check the error above.');
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('CRITICAL ERROR (Unhandled Rejection):', reason);
-});
-
+// The host Central Gateway owns process-level exception handlers and the network listener.
 const app = express();
-const port = 3002;
+const port = Number(process.env.PROCUREMENT_STANDALONE_PORT || 3002);
 
 // Middleware Global
-app.use(cors({ origin: true, methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'], credentials: true }));
+app.use(cors({ origin: process.env.PROCUREMENT_CORS_ORIGIN || false, methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(bodyParser.json());
 
 // ==========================================
@@ -54,6 +43,9 @@ module.exports.app = app;
 
 // Start Server ONLY when run directly as standalone process
 if (require.main === module) {
+    if (process.env.PROCUREMENT_ALLOW_STANDALONE !== 'true') {
+        throw new Error('Standalone Procurement listener disabled; mount the router in Central API Gateway instead');
+    }
     app.listen(port, () => {
         console.log(`🚀 Procurement Standalone Server running on port ${port}`);
         console.log(`✅ Thai Language Support Patch Applied (v2.2)`);
@@ -63,7 +55,7 @@ if (require.main === module) {
 
     // Standalone Mode: Run auto-migration safely after delay, preserving original standalone behavior.
     // In Gateway Mode or when AUTO_MIGRATE=false, this block is never reached or disabled.
-    if (process.env.AUTO_MIGRATE !== 'false' && process.env.GATEWAY_MODE !== 'true') {
+    if (process.env.AUTO_MIGRATE === 'true' && process.env.GATEWAY_MODE !== 'true') {
         setTimeout(() => {
             if (typeof procurementRoutes.runAutoMigration === 'function') {
                 procurementRoutes.runAutoMigration().catch(err => {
