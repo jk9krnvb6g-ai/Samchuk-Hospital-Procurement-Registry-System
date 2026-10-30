@@ -360,24 +360,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
     };
 
-    const loginWithProviderId = async (providerId: string, _pin?: string): Promise<{ success: boolean; user?: User; message?: string }> => {
-        const cleanPid = (providerId || '').trim().toLowerCase();
-        const found = users.find(u => ((u as any).providerId || '').toLowerCase() === cleanPid || u.username.toLowerCase() === cleanPid || u.id.toLowerCase() === cleanPid);
-        if (found) {
-            setCurrentUser(found);
-            sessionStorage.setItem('procurement_session_user', JSON.stringify(found));
-            return { success: true, user: found };
-        }
-        // Fallback: if in demo mode or test, match admin if requested
-        if (cleanPid.includes('admin') || cleanPid.includes('10738')) {
-            const adminUser = users.find(u => u.role === 'ADMIN') || users[0];
-            if (adminUser) {
-                setCurrentUser(adminUser);
-                sessionStorage.setItem('procurement_session_user', JSON.stringify(adminUser));
-                return { success: true, user: adminUser };
-            }
-        }
-        return { success: false, message: 'ไม่พบข้อมูล MOPH Provider ID นี้ในฐานข้อมูลบุคลากร สธ.' };
+    // Provider ID must be verified by a trusted backend identity provider before enabling SSO.
+    // Never authenticate a user by matching a client-side identifier or a privileged substring.
+    const loginWithProviderId = async (_providerId: string, _pin?: string): Promise<{ success: boolean; user?: User; message?: string }> => {
+        return { success: false, message: 'การเข้าสู่ระบบด้วย Provider ID ยังไม่เปิดใช้งาน กรุณาเข้าสู่ระบบด้วยชื่อผู้ใช้และรหัสผ่าน' };
     };
 
     const logout = () => { 
