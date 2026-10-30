@@ -3,19 +3,48 @@ import { ProcurementRecord, ReceivingReport, RecordType, ConsiderationRecord, Ap
 import { generate1000MockRecords } from './mockDataGenerator';
 
 // ==========================================
-// ⚙️ BACKEND CONFIGURATION
+// ⚙️ BACKEND & CENTRAL GATEWAY CONFIGURATION
 // ==========================================
-const BACKEND_PORT = 3002; 
-
-const getApiUrl = () => {
-    if (typeof window === 'undefined') return `http://localhost:${BACKEND_PORT}/api/procurement`;
-    if (window.location.protocol === 'https:') return 'api'; 
-    let hostname = window.location.hostname;
-    if (!hostname || hostname.trim() === '') hostname = 'localhost';
-    return `http://${hostname}:${BACKEND_PORT}/api/procurement`;
+export const getApiBaseUrl = (): string => {
+    // 1. Explicit environment variable override
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) {
+        return (import.meta.env.VITE_API_BASE_URL as string).replace(/\/+$/, '');
+    }
+    // 2. Server-side / fallback
+    if (typeof window === 'undefined') {
+        return 'https://10.2.0.13:3002/api/Procurement';
+    }
+    // 3. Dynamic client resolution: preserve protocol and use Central Gateway port 3002
+    const hostname = window.location.hostname || '10.2.0.13';
+    const proto = window.location.protocol === 'https:' ? 'https:' : 'http:';
+    return `${proto}//${hostname}:3002/api/Procurement`;
 };
 
-const API_URL = getApiUrl();
+const API_URL = getApiBaseUrl();
+
+// Helper to provide authorization Bearer headers
+export const getAuthHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (typeof window !== 'undefined') {
+        const token = sessionStorage.getItem('procurement_session_token');
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+    }
+    return headers;
+};
+
+// Unified fetch wrapper ensuring Gateway URL and Authorization headers
+export const apiFetch = async (endpoint: string, options: RequestInit = {}) => {
+    const headers = {
+        ...getAuthHeaders(),
+        ...(options.headers || {})
+    };
+    return fetch(`${API_URL}${endpoint}`, {
+        ...options,
+        headers
+    });
+};
 
 // Thai number helpers for client-side demo calculations
 const toArabic = (str: string) => {
@@ -147,6 +176,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const [serverError, setServerError] = useState(false);
     const [serverErrorMessage, setServerErrorMessage] = useState('');
     const [isDemoMode, setIsDemoMode] = useState(false);
+    // In Production: Demo Mode and Mock Data are strictly disabled (Fail-Closed)
+    const isLocalDemo = !import.meta.env.PROD && isDemoMode;
     const [users, setUsers] = useState<User[]>(DEMO_USERS);
     // เริ่มต้นที่ null เพื่อให้แสดงหน้า Login ทันที
     const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -225,17 +256,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const fetchData = async (isBackground = false) => {
         if (!isBackground) { setIsLoading(true); setServerError(false); }
         try {
-            const userRes = await fetch(`${API_URL}/users`, { signal: AbortSignal.timeout(3000) });
-            if (!userRes.ok) throw new Error('API offline');
-            const userData = await userRes.json();
-            setUsers(userData);
-            
-            const dataRes = await fetch(`${API_URL}/data`, { signal: AbortSignal.timeout(3000) });
-            if (!dataRes.ok) throw new Error('API offline');
+            const dataRes = await apiFetch('/data', { signal: AbortSignal.timeout(4000) });
+            if (!dataRes.ok) throw new Error(`HTTP ${dataRes.status}`);
             const data = await dataRes.json();
             setProcurements(data.procurements || []);
             setReceivings(data.receivings || []);
             setConsiderations(data.considerations || []);
+            setUsers(data.users || []);
             setSettings({
                 requestIdPrefix: data.settings?.requestIdPrefix || 'สพ ๐๐๓๓.๐๖/๑๔/',
                 departments: data.settings?.departments || DEMO_DEPARTMENTS,
@@ -243,12 +270,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 workGroups: data.settings?.workGroups || DEMO_WORKGROUPS
             });
             setIsDemoMode(false);
+            setServerError(false);
+            setServerErrorMessage('');
             if (isBackground) setServerError(false);
         } catch (error: any) {
-            // If backend is not available (such as in preview environment), fall back to standalone mode cleanly
-            setIsDemoMode(true);
-            setServerError(false);
-            // ไม่ล็อกอินอัตโนมัติ เพื่อให้แสดงหน้า Login ให้ผู้ใช้กรอก
+            if (import.meta.env.PROD) {
+                // In Production: Never show mock records as real data
+                setIsDemoMode(false);
+                setServerError(true);
+                setServerErrorMessage(`ไม่สามารถเชื่อมต่อ Central API Gateway ได้ที่ ${API_URL} (${error.message || 'Offline'}) กรุณาตรวจสอบสถานะ Gateway บนพอร์ต 3002`);
+                setProcurements([]);
+                setReceivings([]);
+                setConsiderations([]);
+                setUsers([]);
+            } else {
+                // In Development/Preview only
+                setIsDemoMode(true);
+                setServerError(false);
+            }
         } finally {
             if (!isBackground) setIsLoading(false);
         }
@@ -277,10 +316,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         const cleanUser = (u || '').trim().toLowerCase();
         const cleanPass = (p || '').trim();
 
-        if (isDemoMode) {
+        // In Production: Strictly block Demo Mode credentials
+        if (isDemoMode && !import.meta.env.PROD) {
             const user = users.find(usr => usr.username.toLowerCase() === cleanUser);
             if (user) {
-                // ตรวจสอบรหัสผ่าน (รองรับ admin123, user123 หรือตามรหัสของผู้ใช้)
                 if (cleanPass && user.password && user.password !== cleanPass && cleanPass !== 'admin123' && cleanPass !== 'user123') {
                     return { success: false, message: 'รหัสผ่านไม่ถูกต้อง (สำหรับเข้าติดตั้ง: admin / admin123)' };
                 }
@@ -290,16 +329,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             }
             return { success: false, message: 'ไม่พบบัญชีผู้ใช้งานนี้ในระบบ (บัญชีผู้ดูแลระบบเริ่มต้น: admin / admin123)' };
         }
+
         try {
-            const res = await fetch(`${API_URL}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: p }) });
+            const res = await apiFetch('/login', {
+                method: 'POST',
+                body: JSON.stringify({ username: u, password: p }),
+                signal: AbortSignal.timeout(5000)
+            });
             const result = await res.json();
             if (result.success) { 
                 setCurrentUser(result.user); 
-                sessionStorage.setItem('procurement_session_user', JSON.stringify(result.user)); 
+                sessionStorage.setItem('procurement_session_user', JSON.stringify(result.user));
+                if (result.token) {
+                    sessionStorage.setItem('procurement_session_token', result.token);
+                }
             }
             return result;
         } catch (e: any) { 
-            // Fallback for standalone/local auth
+            if (import.meta.env.PROD) {
+                return { success: false, message: `ไม่สามารถเชื่อมต่อระบบยืนยันตัวตน Central API Gateway ได้ (${e.message}) กรุณาตรวจสอบการเชื่อมต่อเครือข่าย` };
+            }
+            // Fallback for standalone/local auth in Dev
             const user = users.find(usr => usr.username.toLowerCase() === cleanUser);
             if (user) {
                 setCurrentUser(user);
@@ -333,27 +383,31 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const logout = () => { 
         setCurrentUser(null); 
         sessionStorage.removeItem('procurement_session_user'); 
+        sessionStorage.removeItem('procurement_session_token');
     };
 
     const registerUser = async (userData: any) => {
-        if (isDemoMode) {
+        if (isDemoMode && !import.meta.env.PROD) {
             const newUser: User = { ...userData, id: `usr_${Date.now()}`, status: 'ACTIVE', createdAt: Date.now() };
             setUsers(prev => [...prev, newUser]);
             return true;
         }
         try { 
-            await fetch(`${API_URL}/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(userData) }); 
+            await apiFetch('/register', { method: 'POST', body: JSON.stringify(userData) }); 
             fetchData(true); 
             return true; 
         } catch (e) { return false; }
     };
 
     const updateUser = async (id: string, data: any) => {
-        if (isDemoMode) {
+        if (isDemoMode && !import.meta.env.PROD) {
             setUsers(prev => prev.map(u => u.id === id ? { ...u, ...data } : u));
             return;
         }
-        try { await fetch(`${API_URL}/users/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); fetchData(true); } catch(e) {}
+        try { 
+            await apiFetch(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }); 
+            fetchData(true); 
+        } catch(e) {}
     };
 
     const deleteUser = (id: string) => updateUser(id, { status: 'SUSPENDED' });
@@ -482,7 +536,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
         const officialNumber = generateRunningNumber(data.type, data.amount, data.requestDate);
         
-        if (isDemoMode) {
+        if (isLocalDemo) {
             const userDept = settings.departments.find(d => d.id === (currentUser?.departmentId || 'dept_1'));
             const prefix = userDept?.requestPrefix || 'สพ ๐๐๓๓.๐๖/๑๔/';
             const newRequestId = getNextUnifiedSequence(prefix, data.requestDate);
@@ -513,7 +567,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
         const newRecord = { ...data, officialNumber, departmentId: currentUser?.departmentId, createdBy: currentUser?.id || 'unknown' };
         try {
-            const res = await fetch(`${API_URL}/procurements`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newRecord) });
+            const res = await apiFetch('/procurements', { method: 'POST', body: JSON.stringify(newRecord) });
             fetchData(true); 
             addAuditLog({
                 recordId: newRecord.id || 'server_id',
@@ -569,7 +623,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             changes.push({ field: 'remarks', label: 'หมายเหตุ', oldValue: currentItem.remarks, newValue: data.remarks });
         }
 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setProcurements(prev => {
                 const next = prev.map(p => p.id === id ? { ...p, ...payload } : p);
                 saveToStorage('samchuk_demo_procurements_v3', next);
@@ -590,7 +644,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
 
         try {
-            await fetch(`${API_URL}/procurements/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            await apiFetch(`/procurements/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
             fetchData(true);
             if (changes.length > 0) {
                 addAuditLog({
@@ -630,7 +684,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             deletedBy: currentUser?.name || 'ไม่ระบุ'
         };
 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setProcurements(prev => {
                 const next = prev.map(p => p.id === id ? updated : p);
                 saveToStorage('samchuk_demo_procurements_v3', next);
@@ -638,7 +692,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             });
         } else {
             try {
-                await fetch(`${API_URL}/procurements/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) });
+                await apiFetch(`/procurements/${id}`, { method: 'PATCH', body: JSON.stringify(updated) });
                 fetchData(true);
             } catch (e) {
                 console.error(e);
@@ -668,7 +722,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             deletedBy: undefined
         };
 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setProcurements(prev => {
                 const next = prev.map(p => p.id === id ? updated : p);
                 saveToStorage('samchuk_demo_procurements_v3', next);
@@ -676,7 +730,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             });
         } else {
             try {
-                await fetch(`${API_URL}/procurements/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) });
+                await apiFetch(`/procurements/${id}`, { method: 'PATCH', body: JSON.stringify(updated) });
                 fetchData(true);
             } catch (e) {
                 console.error(e);
@@ -699,7 +753,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         const target = procurements.find(p => p.id === id);
         if (!target) return false;
 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setProcurements(prev => {
                 const next = prev.filter(p => p.id !== id);
                 saveToStorage('samchuk_demo_procurements_v3', next);
@@ -707,7 +761,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             });
         } else {
             try {
-                await fetch(`${API_URL}/procurements/${id}`, { method: 'DELETE' });
+                await apiFetch(`/procurements/${id}`, { method: 'DELETE' });
                 fetchData(true);
             } catch (e) {
                 console.error(e);
@@ -742,7 +796,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             lockedBy: nextLocked ? (currentUser?.name || 'Admin') : undefined
         };
 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setProcurements(prev => {
                 const next = prev.map(p => p.id === id ? updated : p);
                 saveToStorage('samchuk_demo_procurements_v3', next);
@@ -750,7 +804,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             });
         } else {
             try {
-                await fetch(`${API_URL}/procurements/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) });
+                await apiFetch(`/procurements/${id}`, { method: 'PATCH', body: JSON.stringify(updated) });
                 fetchData(true);
             } catch (e) {
                 console.error(e);
@@ -860,34 +914,34 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     const addReceiving = async (data: any) => { 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setReceivings(prev => [...prev, { ...data, id: `recv_${Date.now()}`, createdAt: new Date().toISOString() }]);
             return;
         }
-        await fetch(`${API_URL}/receivings`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }); 
+        await apiFetch('/receivings', { method: 'POST', body: JSON.stringify(data) }); 
         fetchData(true); 
     };
 
     const deleteReceiving = async (id: string) => { 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setReceivings(prev => prev.filter(r => r.id !== id));
             return;
         }
-        await fetch(`${API_URL}/receivings/${id}`, { method: 'DELETE' }); 
+        await apiFetch(`/receivings/${id}`, { method: 'DELETE' }); 
         fetchData(true); 
     };
 
     const addConsideration = async (record: any) => { 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setConsiderations(prev => [...prev, { ...record, id: `cons_${Date.now()}` }]);
             return;
         }
-        await fetch(`${API_URL}/considerations`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(record) }); 
+        await apiFetch('/considerations', { method: 'POST', body: JSON.stringify(record) }); 
         fetchData(true); 
     };
 
     const upsertReceiving = async (requestId: string, number: string | null, date: string, procurementId?: string, requestDate?: string) => {
-        if (isDemoMode) {
+        if (isLocalDemo) {
             let finalNo = number;
             if (!finalNo || finalNo.trim() === '') {
                 const targetProc = procurements.find(p => p.id === procurementId || p.requestId === requestId);
@@ -911,9 +965,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
 
         try { 
-            const res = await fetch(`${API_URL}/receivings/upsert`, { 
+            const res = await apiFetch('/receivings/upsert', { 
                 method: 'POST', 
-                headers: {'Content-Type':'application/json'}, 
                 body: JSON.stringify({ requestId, deliveryNoteNo: number, receiveDate: date, procurementId, requestDate }) 
             }); 
             if (res.ok) { await fetchData(true); return true; } 
@@ -922,7 +975,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     const upsertConsideration = async (requestId: string, number: string | null, date: string, procurementId?: string, requestDate?: string) => {
-        if (isDemoMode) {
+        if (isLocalDemo) {
             let finalNo = number;
             if (!finalNo || finalNo.trim() === '') {
                 const targetProc = procurements.find(p => p.id === procurementId || p.requestId === requestId);
@@ -946,9 +999,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
 
         try { 
-            const res = await fetch(`${API_URL}/considerations/upsert`, { 
+            const res = await apiFetch('/considerations/upsert', { 
                 method: 'POST', 
-                headers: {'Content-Type':'application/json'}, 
                 body: JSON.stringify({ requestId, considerationNumber: number, considerationDate: date, procurementId, requestDate }) 
             }); 
             if (res.ok) { await fetchData(true); return true; } 
@@ -994,63 +1046,63 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     const addDepartment = async (dept: Department) => { 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setSettings(prev => ({ ...prev, departments: [...prev.departments, dept] }));
             return;
         }
-        try { await fetch(`${API_URL}/department`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(dept) }); fetchData(true); } catch(e) {} 
+        try { await apiFetch('/department', { method: 'POST', body: JSON.stringify(dept) }); fetchData(true); } catch(e) {} 
     };
 
     const updateDepartment = async (id: string, data: Partial<Department>) => { 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setSettings(prev => ({ ...prev, departments: prev.departments.map(d => d.id === id ? { ...d, ...data } : d) }));
             return;
         }
-        try { await fetch(`${API_URL}/department/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); fetchData(true); } catch(e) {} 
+        try { await apiFetch(`/department/${id}`, { method: 'PATCH', body: JSON.stringify(data) }); fetchData(true); } catch(e) {} 
     };
 
     const addWorkGroup = async (group: WorkGroup) => { 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setSettings(prev => ({ ...prev, workGroups: [...prev.workGroups, group] }));
             return;
         }
-        await fetch(`${API_URL}/workgroup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(group) }); 
+        await apiFetch('/workgroup', { method: 'POST', body: JSON.stringify(group) }); 
         fetchData(true); 
     };
 
     const updateWorkGroup = async (id: string, data: Partial<WorkGroup>) => { 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setSettings(prev => ({ ...prev, workGroups: prev.workGroups.map(w => w.id === id ? { ...w, ...data } : w) }));
             return;
         }
-        await fetch(`${API_URL}/workgroup/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); 
+        await apiFetch(`/workgroup/${id}`, { method: 'PATCH', body: JSON.stringify(data) }); 
         fetchData(true); 
     };
 
     const addCategory = async (category: ProcurementCategory) => { 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setSettings(prev => ({ ...prev, categories: [...prev.categories, category] }));
             return;
         }
-        await fetch(`${API_URL}/category`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(category) }); 
+        await apiFetch('/category', { method: 'POST', body: JSON.stringify(category) }); 
         fetchData(true); 
     };
 
     const updateCategory = async (id: string, data: Partial<ProcurementCategory>) => { 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setSettings(prev => ({ ...prev, categories: prev.categories.map(c => c.id === id ? { ...c, ...data } : c) }));
             return;
         }
-        await fetch(`${API_URL}/category/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); 
+        await apiFetch(`/category/${id}`, { method: 'PATCH', body: JSON.stringify(data) }); 
         fetchData(true); 
     };
 
     const deleteCategory = async (id: string) => { 
-        if (isDemoMode) {
+        if (isLocalDemo) {
             setSettings(prev => ({ ...prev, categories: prev.categories.filter(c => c.id !== id) }));
             return;
         }
-        await fetch(`${API_URL}/category/${id}`, { method: 'DELETE' }); 
+        await apiFetch(`/category/${id}`, { method: 'DELETE' }); 
         fetchData(true); 
     };
 

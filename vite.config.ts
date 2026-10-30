@@ -4,8 +4,8 @@ import react from '@vitejs/plugin-react'
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
-  // กำหนด Base path เป็น relative เพื่อให้ทำงานได้ทั้งใน IIS (/Procurement/) และ Preview
-  base: './', 
+  // Base path: relative './' for IIS production builds, '/' for dev server in Preview
+  base: process.env.NODE_ENV === 'production' ? './' : '/',
   server: {
     port: 3000,
     host: true,

@@ -2,13 +2,18 @@
 const mysql = require('mysql2/promise');
 
 const DB_CONFIG = { 
-    host: '10.1.0.201', 
-    user: 'sa', 
-    password: 'Sam#11294', 
-    database: 'procurement_db', 
-    port: 3306,
+    host: process.env.PROCUREMENT_DB_HOST, 
+    user: process.env.PROCUREMENT_DB_USER, 
+    password: process.env.PROCUREMENT_DB_PASSWORD, 
+    database: process.env.PROCUREMENT_DB_NAME, 
+    port: parseInt(process.env.PROCUREMENT_DB_PORT || '3306', 10),
     charset: 'utf8mb4' 
 };
+
+if (!DB_CONFIG.host || !DB_CONFIG.user || !DB_CONFIG.password || !DB_CONFIG.database) {
+    console.error('ERROR: Missing required database environment variables (PROCUREMENT_DB_HOST, PROCUREMENT_DB_USER, PROCUREMENT_DB_PASSWORD, PROCUREMENT_DB_NAME). Seeding aborted.');
+    process.exit(1);
+}
 
 // --- Helpers ---
 const getRandomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
