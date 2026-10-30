@@ -381,7 +381,7 @@ router.post('/procurements', authenticateToken, async (req, res) => {
         }
 
         const newId = `proc_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-        const creatorId = req.user?.id || p.createdBy || 'unknown';
+        const creatorId = req.user.id;
         await query('INSERT INTO procurements (id, request_id, request_date, category, item_count, amount, company, remarks, official_number, type, department_id, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
             [newId, finalRequestId, p.requestDate, p.category, p.itemCount, p.amount, p.company, p.remarks, finalOfficialNumber, p.type, p.departmentId, creatorId, Date.now()]);
         
@@ -393,7 +393,7 @@ router.post('/procurements', authenticateToken, async (req, res) => {
 });
 
 // 3. DELETE /procurements/:id - Delete Procurement Record
-router.delete('/procurements/:id', authenticateToken, async (req, res) => {
+router.delete('/procurements/:id', authenticateToken, requireAdmin, async (req, res) => {
     try { 
         await query('DELETE FROM procurements WHERE id = ?', [req.params.id]); 
         res.json({ success: true }); 
@@ -416,7 +416,12 @@ router.patch('/procurements/:id', authenticateToken, async (req, res) => {
         if (p.company !== undefined) { fields.push('company = ?'); params.push(p.company); }
         if (p.remarks !== undefined) { fields.push('remarks = ?'); params.push(p.remarks); }
         if (p.officialNumber !== undefined) { fields.push('official_number = ?'); params.push(p.officialNumber); }
-        if (p.isLocked !== undefined) { fields.push('is_locked = ?'); params.push(p.isLocked ? 1 : 0); }
+        if (p.isLocked !== undefined) {
+            if (!['ADMIN', 'EXECUTIVE'].includes(req.user.role)) {
+                return res.status(403).json({ success: false, error: 'Only ADMIN or EXECUTIVE may change lock state' });
+            }
+            fields.push('is_locked = ?'); params.push(p.isLocked ? 1 : 0);
+        }
         if (fields.length > 0) { 
             params.push(req.params.id); 
             await query(`UPDATE procurements SET ${fields.join(', ')} WHERE id = ?`, params); 
@@ -631,6 +636,7 @@ const ALLOWED_USER_FIELDS = {
 router.patch('/users/:id', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const targetId = req.params.id;
+        if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return res.status(400).json({ success: false, error: 'Invalid update payload' });
         const updates = [];
         const params = [];
 
@@ -676,7 +682,7 @@ router.patch('/users/:id', authenticateToken, requireAdmin, async (req, res) => 
 });
 
 // 10. POST & PATCH /workgroup
-router.post('/workgroup', authenticateToken, async (req, res) => {
+router.post('/workgroup', authenticateToken, requireAdmin, async (req, res) => {
     const { id, name, prefix, isActive } = req.body || {};
     try { 
         await query('INSERT INTO work_groups (id, name, prefix, is_active) VALUES (?,?,?,?)', [id, name, prefix, isActive ? 1 : 0]); 
@@ -687,7 +693,7 @@ router.post('/workgroup', authenticateToken, async (req, res) => {
     }
 });
 
-router.patch('/workgroup/:id', authenticateToken, async (req, res) => {
+router.patch('/workgroup/:id', authenticateToken, requireAdmin, async (req, res) => {
     const { name, prefix, isActive } = req.body || {};
     try {
         let sql = 'UPDATE work_groups SET '; const params = []; const updates = [];
@@ -703,7 +709,7 @@ router.patch('/workgroup/:id', authenticateToken, async (req, res) => {
 });
 
 // 11. POST & PATCH /department
-router.post('/department', authenticateToken, async (req, res) => {
+router.post('/department', authenticateToken, requireAdmin, async (req, res) => {
     const { id, name, prefix, requestPrefix, workGroupId, isActive } = req.body || {};
     try { 
         await query('INSERT INTO departments (id, name, prefix, request_prefix, work_group_id, is_active) VALUES (?,?,?,?,?,?)', [id, name, prefix, requestPrefix, workGroupId, isActive ? 1 : 0]); 
@@ -714,7 +720,7 @@ router.post('/department', authenticateToken, async (req, res) => {
     }
 });
 
-router.patch('/department/:id', authenticateToken, async (req, res) => {
+router.patch('/department/:id', authenticateToken, requireAdmin, async (req, res) => {
     const { name, prefix, requestPrefix, isActive } = req.body || {};
     try {
         let sql = 'UPDATE departments SET '; const params = []; const updates = [];
@@ -731,7 +737,7 @@ router.patch('/department/:id', authenticateToken, async (req, res) => {
 });
 
 // 12. POST, PATCH & DELETE /category
-router.post('/category', authenticateToken, async (req, res) => {
+router.post('/category', authenticateToken, requireAdmin, async (req, res) => {
     const { id, name, departmentId, isActive } = req.body || {};
     try { 
         await query('INSERT INTO procurement_categories (id, name, department_id, is_active) VALUES (?,?,?,?)', [id, name, departmentId, isActive ? 1 : 0]); 
@@ -742,7 +748,7 @@ router.post('/category', authenticateToken, async (req, res) => {
     }
 });
 
-router.patch('/category/:id', authenticateToken, async (req, res) => {
+router.patch('/category/:id', authenticateToken, requireAdmin, async (req, res) => {
     const { name, isActive } = req.body || {};
     try {
         let sql = 'UPDATE procurement_categories SET '; const params = []; const updates = [];
@@ -756,7 +762,7 @@ router.patch('/category/:id', authenticateToken, async (req, res) => {
     }
 });
 
-router.delete('/category/:id', authenticateToken, async (req, res) => {
+router.delete('/category/:id', authenticateToken, requireAdmin, async (req, res) => {
     try { 
         await query('UPDATE procurement_categories SET is_active = 0 WHERE id = ?', [req.params.id]); 
         res.json({ success: true }); 
