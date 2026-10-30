@@ -358,6 +358,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 signal: AbortSignal.timeout(5000)
             });
             const result = await res.json();
+            if (!res.ok) return { success: false, message: result.message || 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' };
             if (result.success && result.token && result.user) {
                 setCurrentUser(result.user); 
                 sessionStorage.setItem('procurement_session_user', JSON.stringify(result.user));
@@ -402,9 +403,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             return true;
         }
         try { 
-            await apiFetch('/register', { method: 'POST', body: JSON.stringify(userData) }); 
-            fetchData(true); 
-            return true; 
+            // Backend has no /register route. Fail explicitly instead of reporting false success.
+            console.warn('User registration API is not available; configure an ADMIN-only backend endpoint first');
+            return false; 
         } catch (e) { return false; }
     };
 
@@ -414,8 +415,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             return;
         }
         try { 
-            await apiFetch(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }); 
-            fetchData(true); 
+            const response = await apiFetch(`/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) });
+            if (!response.ok) throw new Error(`Update user failed: HTTP ${response.status}`);
+            await fetchData(true); 
         } catch(e) {}
     };
 
