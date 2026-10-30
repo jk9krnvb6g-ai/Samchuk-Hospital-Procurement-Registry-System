@@ -273,9 +273,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setUsers(data.users || []);
             setSettings({
                 requestIdPrefix: data.settings?.requestIdPrefix || 'สพ ๐๐๓๓.๐๖/๑๔/',
-                departments: data.settings?.departments || DEMO_DEPARTMENTS,
-                categories: data.settings?.categories || DEMO_CATEGORIES,
-                workGroups: data.settings?.workGroups || DEMO_WORKGROUPS
+                departments: data.settings?.departments || [],
+                categories: data.settings?.categories || [],
+                workGroups: data.settings?.workGroups || []
             });
             setIsDemoMode(false);
             setServerError(false);
@@ -371,14 +371,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             if (import.meta.env.PROD) {
                 return { success: false, message: `ไม่สามารถเชื่อมต่อระบบยืนยันตัวตน Central API Gateway ได้ (${e.message}) กรุณาตรวจสอบการเชื่อมต่อเครือข่าย` };
             }
-            // Fallback for standalone/local auth in Dev
-            const user = users.find(usr => usr.username.toLowerCase() === cleanUser);
-            if (user) {
-                setCurrentUser(user);
-                sessionStorage.setItem('procurement_session_user', JSON.stringify(user));
-                return { success: true };
-            }
-            return { success: false, message: 'ไม่สามารถเชื่อมต่อฐานข้อมูล และไม่พบบัญชีผู้ใช้งาน' }; 
+            return { success: false, message: 'ไม่สามารถเชื่อมต่อระบบยืนยันตัวตนได้ กรุณาลองใหม่อีกครั้ง' }; 
         }
     };
 
@@ -418,7 +411,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             const response = await apiFetch(`/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) });
             if (!response.ok) throw new Error(`Update user failed: HTTP ${response.status}`);
             await fetchData(true); 
-        } catch(e) {}
+        } catch(e) { throw e; }
     };
 
     const deleteUser = (id: string) => updateUser(id, { status: 'SUSPENDED' });
@@ -929,8 +922,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setReceivings(prev => [...prev, { ...data, id: `recv_${Date.now()}`, createdAt: new Date().toISOString() }]);
             return;
         }
-        await apiFetch('/receivings', { method: 'POST', body: JSON.stringify(data) }); 
-        fetchData(true); 
+        const response = await apiFetch('/receivings/upsert', { method: 'POST', body: JSON.stringify(data) });
+        if (!response.ok) throw new Error(`Receiving save failed: HTTP ${response.status}`);
+        await fetchData(true); 
     };
 
     const deleteReceiving = async (id: string) => { 
@@ -938,8 +932,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setReceivings(prev => prev.filter(r => r.id !== id));
             return;
         }
-        await apiFetch(`/receivings/${id}`, { method: 'DELETE' }); 
-        fetchData(true); 
+        throw new Error('Receiving deletion is not supported by the backend; no data was deleted'); 
     };
 
     const addConsideration = async (record: any) => { 
@@ -947,8 +940,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setConsiderations(prev => [...prev, { ...record, id: `cons_${Date.now()}` }]);
             return;
         }
-        await apiFetch('/considerations', { method: 'POST', body: JSON.stringify(record) }); 
-        fetchData(true); 
+        const response = await apiFetch('/considerations/upsert', { method: 'POST', body: JSON.stringify(record) });
+        if (!response.ok) throw new Error(`Consideration save failed: HTTP ${response.status}`);
+        await fetchData(true); 
     };
 
     const upsertReceiving = async (requestId: string, number: string | null, date: string, procurementId?: string, requestDate?: string) => {
