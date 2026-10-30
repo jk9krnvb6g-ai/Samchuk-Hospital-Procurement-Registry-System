@@ -40,10 +40,13 @@ export const apiFetch = async (endpoint: string, options: RequestInit = {}) => {
         ...getAuthHeaders(),
         ...(options.headers || {})
     };
-    return fetch(`${API_URL}${endpoint}`, {
-        ...options,
-        headers
-    });
+    const response = await fetch(`${API_URL}${endpoint}`, { ...options, headers });
+    if (response.status === 401 && endpoint !== '/login' && typeof window !== 'undefined') {
+        sessionStorage.removeItem('procurement_session_token');
+        sessionStorage.removeItem('procurement_session_user');
+        window.dispatchEvent(new Event('procurement:session-expired'));
+    }
+    return response;
 };
 
 // Thai number helpers for client-side demo calculations
@@ -255,6 +258,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const fetchData = async (isBackground = false) => {
         if (!isBackground) { setIsLoading(true); setServerError(false); }
+        if (!isLocalDemo && !sessionStorage.getItem('procurement_session_token')) {
+            setProcurements([]); setReceivings([]); setConsiderations([]);
+            if (!isBackground) setIsLoading(false);
+            return;
+        }
         try {
             const dataRes = await apiFetch('/data', { signal: AbortSignal.timeout(4000) });
             if (!dataRes.ok) throw new Error(`HTTP ${dataRes.status}`);
@@ -294,6 +302,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     useEffect(() => {
+        const expireSession = () => {
+            setCurrentUser(null);
+            setProcurements([]); setReceivings([]); setConsiderations([]);
+            setUsers([]);
+            setServerError(true);
+            setServerErrorMessage('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        };
+        window.addEventListener('procurement:session-expired', expireSession);
+        return () => window.removeEventListener('procurement:session-expired', expireSession);
+    }, []);
+
+    useEffect(() => {
         // ล้างข้อมูลแคชจำลองเก่าออกเพื่อความสะอาด
         if (typeof window !== 'undefined') {
             try {
@@ -303,10 +323,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 localStorage.removeItem('samchuk_audit_logs_v1');
             } catch (e) {}
         }
-        fetchData(false);
+        if (sessionStorage.getItem('procurement_session_token')) fetchData(false);
+        else setIsLoading(false);
         const intervalId = setInterval(() => {
-            if (!isDemoMode) fetchData(true);
-        }, 10000);
+            if (sessionStorage.getItem('procurement_session_token')) fetchData(true);
+        }, 60000);
         return () => clearInterval(intervalId);
     }, [isDemoMode]);
 
@@ -337,14 +358,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 signal: AbortSignal.timeout(5000)
             });
             const result = await res.json();
-            if (result.success) { 
+            if (result.success && result.token && result.user) {
                 setCurrentUser(result.user); 
                 sessionStorage.setItem('procurement_session_user', JSON.stringify(result.user));
-                if (result.token) {
-                    sessionStorage.setItem('procurement_session_token', result.token);
-                }
+                sessionStorage.setItem('procurement_session_token', result.token);
+                await fetchData(true);
+                return result;
             }
-            return result;
+            return { success: false, message: result.message || 'ไม่สามารถเข้าสู่ระบบได้' };
         } catch (e: any) { 
             if (import.meta.env.PROD) {
                 return { success: false, message: `ไม่สามารถเชื่อมต่อระบบยืนยันตัวตน Central API Gateway ได้ (${e.message}) กรุณาตรวจสอบการเชื่อมต่อเครือข่าย` };
@@ -370,6 +391,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setCurrentUser(null); 
         sessionStorage.removeItem('procurement_session_user'); 
         sessionStorage.removeItem('procurement_session_token');
+        setProcurements([]); setReceivings([]); setConsiderations([]);
+        setUsers([]);
     };
 
     const registerUser = async (userData: any) => {
