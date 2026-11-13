@@ -341,7 +341,7 @@ router.post('/procurements', optionalAuthenticate, async (req, res) => {
         let finalOfficialNumber = p.officialNumber || null;
 
         // Logic: 1 บาทขึ้นไปออกเลขที่ได้เลย
-        if (!finalOfficialNumber && (p.type === 'OTHER' || Number(p.amount) >= 1)) {
+        if (!finalOfficialNumber) {
             const wgRes = await query(`
                 SELECT w.id as wg_id, w.prefix as wg_prefix 
                 FROM departments d 
@@ -375,7 +375,7 @@ router.post('/procurements', optionalAuthenticate, async (req, res) => {
         const newId = `proc_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
         const creatorId = req.user?.id || p.createdBy || 'unknown';
         await query('INSERT INTO procurements (id, request_id, request_date, category, item_count, amount, company, remarks, official_number, type, department_id, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            [newId, finalRequestId, p.requestDate, p.category, p.itemCount, p.type === 'OTHER' && (p.amount === '' || p.amount == null) ? 0 : p.amount, p.company, p.remarks, finalOfficialNumber, p.type, p.departmentId, creatorId, Date.now()]);
+            [newId, finalRequestId, p.requestDate, p.category, p.itemCount, (p.amount === '' || p.amount == null) ? 0 : p.amount, p.company, p.remarks, finalOfficialNumber, p.type, p.departmentId, creatorId, Date.now()]);
         
         res.json({ success: true, requestId: finalRequestId, id: newId });
     } catch (e) { 
