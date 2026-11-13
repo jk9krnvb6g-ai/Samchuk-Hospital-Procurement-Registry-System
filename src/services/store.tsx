@@ -447,7 +447,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // Logic: Share sequence across all departments in the same Work Group (เงื่อนไข 1 บาทขึ้นไปออกเลขที่ได้เลย)
     const generateRunningNumber = (type: RecordType, amount: number, dateStr: string) => {
-        if (amount < 1) return null;
+        if (type !== RecordType.OTHER && amount < 1) return null;
         
         const userDept = settings.departments?.find(d => d.id === currentUser?.departmentId);
         const workGroup = userDept?.workGroupId ? settings.workGroups?.find(g => g.id === userDept.workGroupId) : settings.workGroups?.[0];
@@ -530,7 +530,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     const addProcurement = async (data: any, force = false) => {
-        if (data.amount >= 1 && !force) {
+        if ((data.type === RecordType.OTHER || data.amount >= 1) && !force) {
             const validation = validateChronology(data.type, data.requestDate);
             if (!validation.valid) return { success: false, isWarning: true, message: validation.message };
         }
@@ -597,9 +597,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         const amount = data.amount !== undefined ? data.amount : currentItem.amount;
         const reqDate = data.requestDate || currentItem.requestDate;
 
-        if (amount >= 1 && !newOfficialNumber) {
+        if ((currentItem.type === RecordType.OTHER || amount >= 1) && !newOfficialNumber) {
             newOfficialNumber = generateRunningNumber(currentItem.type, amount, reqDate);
-        } else if (amount < 1) {
+        } else if (currentItem.type !== RecordType.OTHER && amount < 1) {
             newOfficialNumber = null;
         }
 
