@@ -600,7 +600,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (!newOfficialNumber) {
             newOfficialNumber = generateRunningNumber(currentItem.type, amount, reqDate);
         }
-        }
 
         const payload = { ...data, officialNumber: newOfficialNumber };
 
