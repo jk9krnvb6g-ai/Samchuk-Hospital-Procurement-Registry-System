@@ -1949,7 +1949,7 @@ const ProcurementTable: React.FC<Props> = ({ type, title }) => {
 
                                     <div>
                                         <div className="flex justify-between items-center mb-1">
-                                            <label className="block text-xs font-semibold text-slate-700">จำนวนเงิน (บาท) *</label>
+                                            <label className="block text-xs font-semibold text-slate-700">จำนวนเงิน (บาท) {type !== RecordType.OTHER && '*'}</label>
                                             {formData.amount > 0 && (
                                                 <span className="text-[11px] font-bold text-emerald-700 font-mono">
                                                     {Number(formData.amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })} บาท
@@ -1957,14 +1957,18 @@ const ProcurementTable: React.FC<Props> = ({ type, title }) => {
                                             )}
                                         </div>
                                         <input 
-                                            required
+                                            required={type !== RecordType.OTHER}
                                             type="number" 
+                                            min="0"
                                             step="0.01" 
-                                            placeholder="0.00"
+                                            placeholder={type === RecordType.OTHER ? "ไม่ระบุจำนวนเงิน (ไม่บังคับ)" : "0.00"}
                                             className="w-full border border-slate-300 rounded-xl px-3 py-2 focus:ring-2 focus:ring-teal-500 outline-none bg-white text-slate-900 text-sm font-bold font-mono" 
                                             value={formData.amount === 0 ? '' : formData.amount} 
                                             onChange={e => setFormData({...formData, amount: Number(e.target.value)})} 
                                         />
+                                        {type === RecordType.OTHER && (
+                                            <p className="mt-1 text-xs text-slate-500">เว้นว่างได้ โดยระบบจะบันทึกจำนวนเงินเป็น 0.00 บาท และยังออกเลขทะเบียนให้อัตโนมัติ</p>
+                                        )}
                                         {formData.amount > 0 && (() => {
                                             const method = getProcurementMethod(Number(formData.amount));
                                             return (
